@@ -179,6 +179,12 @@ private:
 	void add_completed_jobs(jobqueue_t jobs);
 	void add_completed_jobs_impl(jobqueue_t jobs, jobqueue_t& completed);
 
+	// inserts a write job's block into the cache and performs the hasher-kick
+	// and flush bookkeeping. Shared by async_write() (inline, no fence) and
+	// do_job(write) (when a write that was queued behind a fence is unblocked).
+	// Returns true if the disk buffer pool is over its limit (back-pressure).
+	bool add_write_to_cache(aux::pread_disk_job* j, std::shared_ptr<disk_observer> o);
+
 	void perform_job(aux::pread_disk_job* j, jobqueue_t& completed_jobs);
 
 	// this queues up another job to be submitted
@@ -481,10 +487,39 @@ status_t pread_disk_io::do_job(aux::job::read& a, aux::pread_disk_job* j)
 	return status_t{};
 }
 
-status_t pread_disk_io::do_job(aux::job::write&, aux::pread_disk_job*)
+status_t pread_disk_io::do_job(aux::job::write&, aux::pread_disk_job* j)
 {
-	TORRENT_ASSERT_FAIL();
-	return status_t{};
+	// Reached for a write that was queued behind a fence (async_write) and has
+	// now been unblocked -- or, rarely, for one whose fence lowered between
+	// async_write's has_fence() check and add_job(). It is about to become a
+	// cache-owned block whose completion handler fires only when the block is
+	// flushed to disk (firing it now would mark_as_finished() the block before
+	// it is on disk, and defeat write-failure recovery), so we return
+	// job_deferred and never let perform_job() complete it. Back-pressure is
+	// dropped on this path (no observer).
+
+	// Settle the fence accounting FIRST, while j is still valid and not yet in
+	// the cache. It was counted in m_outstanding_jobs when the fence released
+	// it; if it stayed "outstanding" until the block flushed (which may never
+	// happen for an incomplete piece) it would block a later fence
+	// indefinitely. Settling now also clears in_progress, so the insert below
+	// won't double-complete j if it flushes inline (0-thread mode). Collect any
+	// stacked-fence jobs this unblocks, but don't run them yet.
+	jobqueue_t unblocked;
+	int const n = j->storage->job_complete(j, unblocked);
+	m_stats_counters.inc_stats_counter(counters::blocked_disk_jobs, -n);
+
+	// Insert as a cache-owned block (in_progress now clear, so it behaves like
+	// an inline write). This is the LAST use of j: it may be flushed and freed
+	// before add_write_to_cache() returns.
+	add_write_to_cache(j, {});
+
+	// Now run anything the settle unblocked, AFTER the block is in the cache,
+	// so a hash that was parked behind that stacked fence sees this block.
+	while (!unblocked.empty())
+		execute_job(static_cast<aux::pread_disk_job*>(unblocked.pop_front()));
+
+	return disk_status::job_deferred;
 }
 
 void pread_disk_io::async_read(storage_index_t storage, peer_request const& r
@@ -627,27 +662,6 @@ bool pread_disk_io::async_write(storage_index_t const storage, peer_request cons
 
 	auto storage_ptr = m_torrents[storage]->shared_from_this();
 
-	// a clear_piece (or other fence job) is in flight for this storage. For
-	// clear_piece the cpe is about to be reset; for storage-wide fences (e.g.
-	// release/delete_files) the storage is about to go away. Either way,
-	// inserting now would race with the teardown and could leave a block in
-	// the cache that the picker has just been told to re-pick. Abort the
-	// write so peer_connection sees operation_aborted and calls
-	// mark_as_canceled, which puts the block back in state_none ready to be
-	// re-requested after the fence lowers.
-	if (storage_ptr->has_fence())
-	{
-		aux::pread_disk_job* j = m_job_pool.allocate_job<aux::job::write>(flags,
-			std::move(storage_ptr),
-			std::move(handler),
-			disk_buffer_holder{},
-			r.piece,
-			r.start,
-			std::uint16_t(r.length));
-		m_completed_jobs.abort_job(m_ios, j);
-		return false;
-	}
-
 	disk_buffer_holder buffer(m_buffer_pool, m_buffer_pool.allocate_buffer("receive buffer"));
 	if (!buffer) aux::throw_ex<std::bad_alloc>();
 	std::memcpy(buffer.data(), buf, aux::numeric_cast<std::size_t>(r.length));
@@ -663,21 +677,52 @@ bool pread_disk_io::async_write(storage_index_t const storage, peer_request cons
 		r.start,
 		std::uint16_t(r.length));
 
-	DLOG("async_write: piece: %d offset: %d flags: %x\n"
-		, int(r.piece), int(r.start)
-		, static_cast<std::uint8_t>(flags));
-	bool const force_flush = bool(flags & flush_piece);
+	// a clear_piece (or other fence job) is in flight for this storage. For
+	// clear_piece the cpe is about to be reset; for storage-wide fences (e.g.
+	// release/delete_files) the storage is about to go away. Inserting now
+	// would race with the teardown. Instead of aborting the write, queue it
+	// behind the fence (add_job() -> is_blocked()). When the fence lowers,
+	// do_job(write) runs the same insert path. This keeps the picker's view
+	// consistent: the block stays "writing" (the write is pending, not
+	// aborted), so the piece isn't prematurely reported finished and its hash
+	// isn't requested before every block has actually been inserted into the
+	// cache.
+	// NOTE: back-pressure (the disk_observer o) is dropped on this path for
+	// now. For long-lived fences (e.g. move_storage) we'll want to carry it
+	// through so the peer is throttled while its writes are queued.
+	if (j->storage->has_fence())
+	{
+		add_job(j);
+		return false;
+	}
+
+	return add_write_to_cache(j, std::move(o));
+}
+
+bool pread_disk_io::add_write_to_cache(aux::pread_disk_job* j, std::shared_ptr<disk_observer> o)
+{
+	auto const& a = std::get<aux::job::write>(j->action);
+	piece_index_t const piece = a.piece;
+	int const offset = a.offset;
+
+	DLOG("async_write: piece: %d offset: %d flags: %x\n",
+		int(piece),
+		int(offset),
+		static_cast<std::uint8_t>(j->flags));
+	bool const force_flush = bool(j->flags & flush_piece);
 	file_storage const& fs = j->storage->files();
 	// in order to compute v1 hashes, we need the full piece, including pad
 	// files. Even though v2 torrents guarantee that they are zero.
-	int const piece_size = j->storage->v1() ? fs.piece_size(r.piece) : fs.piece_size2(r.piece);
-	TORRENT_ASSERT(r.length == std::min(piece_size - r.start, default_block_size));
+	int const piece_size = j->storage->v1() ? fs.piece_size(piece) : fs.piece_size2(piece);
+	TORRENT_ASSERT(a.buffer_size == std::min(piece_size - offset, default_block_size));
 	aux::disk_cache::piece_entry_params const piece_params{
-		fs.piece_size2(r.piece), piece_size, j->storage->v1(), j->storage->v2(), j->storage};
-	auto const result = m_cache.insert(
-		{j->storage->storage_index(), r.piece}
-		, r.start / default_block_size
-		, force_flush, std::move(o), j, piece_params);
+		fs.piece_size2(piece), piece_size, j->storage->v1(), j->storage->v2(), j->storage};
+	auto const result = m_cache.insert({j->storage->storage_index(), piece},
+		offset / default_block_size,
+		force_flush,
+		std::move(o),
+		j,
+		piece_params);
 
 	// v1 wake-up signal comes from the cache; for v2 the insert may have
 	// pushed a queue entry the cache has no way to flag.
@@ -694,10 +739,10 @@ bool pread_disk_io::async_write(storage_index_t const storage, peer_request cons
 			m_cache.kick_pending_hashers(completed, retry);
 			m_cache.drain_v2_hash_queue(
 				[](std::shared_ptr<aux::pread_storage> const& st,
-					piece_index_t const piece,
+					piece_index_t const p,
 					int const block,
 					sha256_hash const& h) {
-					if (st) st->store_precomputed_v2(piece, block, h);
+					if (st) st->store_precomputed_v2(p, block, h);
 				},
 				retry,
 				[this](jobqueue_t aborted, aux::disk_job* clear) {
@@ -1987,14 +2032,12 @@ void pread_disk_io::add_completed_jobs_impl(jobqueue_t jobs, jobqueue_t& complet
 	// being non-empty implies the mutex is not already held by this thread and
 	// it is safe to take it here.
 	//
-	// The m_abort check and the re-queue have to happen together under
-	// m_job_mutex (the same mutex abort() holds when it sets m_abort), so the
-	// decision is atomic with respect to the abort. Otherwise m_abort could flip
-	// to true -- and the generic thread pool be torn down -- between the check
-	// and the append, orphaning the jobs in the now-dead pool's queue so their
-	// completion handlers never run. This happens when a job completing on the
-	// hash thread pool (e.g. while checking a torrent) unblocks a stop_torrent
-	// fence job that is then re-queued to the generic pool.
+	// During shutdown (m_abort) the unblocked jobs are completed with
+	// operation_aborted instead of being executed. The check is done under
+	// m_job_mutex (the same mutex abort() holds when it sets m_abort) so the
+	// decision is atomic with respect to abort. Otherwise a stop_torrent fence
+	// unblocked here (e.g. by a job completing on the hash pool while checking a
+	// torrent) could be executed while the disk subsystem is being torn down.
 	if (!new_jobs.empty())
 	{
 		std::lock_guard<std::mutex> l(m_job_mutex);
@@ -2011,26 +2054,18 @@ void pread_disk_io::add_completed_jobs_impl(jobqueue_t jobs, jobqueue_t& complet
 		}
 		else
 		{
-			bool queue_generic = false;
-			bool queue_hash = false;
+			// Run the jobs unblocked by this fence inline, in FIFO order,
+			// instead of handing them to the thread pools. The pools service
+			// jobs concurrently and out of order (writes go to the generic
+			// pool, hashes to the hash pool), which would break the ordering
+			// contract that a piece's write jobs are inserted into the cache
+			// before its hash job runs -- the writes are always queued ahead of
+			// the hash. See disk-cache.md. Fence-lowering is rare, so
+			// serializing these here is acceptable. execute_now is drained below
+			// after m_job_mutex is released, so the inline inserts (which
+			// re-take it via add_write_to_cache) don't deadlock.
 			while (!new_jobs.empty())
-			{
-				auto* j = static_cast<aux::pread_disk_job*>(new_jobs.pop_front());
-				aux::disk_io_thread_pool& pool = pool_for_job(j);
-				if (pool.max_threads() == 0)
-				{
-					execute_now.push_back(j);
-					continue;
-				}
-				pool.push_back(j);
-				if (&pool == &m_hash_threads)
-					queue_hash = true;
-				else
-					queue_generic = true;
-			}
-
-			if (queue_generic) m_generic_threads.submit_jobs();
-			if (queue_hash) m_hash_threads.submit_jobs();
+				execute_now.push_back(static_cast<aux::pread_disk_job*>(new_jobs.pop_front()));
 		}
 	}
 
