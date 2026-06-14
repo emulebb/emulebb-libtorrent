@@ -398,6 +398,14 @@ namespace aux {
 			// enabled, you need to disable it and re-enable it.
 			natpmp_gateway,
 
+			// the DNS server (an IP address, optionally "ip:port", port defaults
+			// to 53) to use for hostname resolution. When set, libtorrent resolves
+			// names with an internal DNS-over-UDP client whose socket is bound and
+			// egress-pinned to the configured outgoing interface, instead of the
+			// system resolver (which is not interface-bound and would leak lookups
+			// outside a VPN tunnel). Empty means use the system resolver.
+			dns_server,
+
 			max_string_setting_internal
 		};
 

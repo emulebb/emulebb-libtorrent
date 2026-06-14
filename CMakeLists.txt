@@ -203,6 +203,7 @@ set(libtorrent_aux_include_files
 	bandwidth_socket.hpp
 	bind_to_device.hpp
 	buffer.hpp
+	dns_resolver.hpp
 	byteswap.hpp
 	chained_buffer.hpp
 	cpuid.hpp
@@ -378,6 +379,7 @@ set(sources
 	random.cpp
 	read_resume_data.cpp
 	receive_buffer.cpp
+	dns_resolver.cpp
 	request_blocks.cpp
 	resolve_links.cpp
 	resolver.cpp

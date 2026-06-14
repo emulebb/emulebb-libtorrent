@@ -84,6 +84,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "libtorrent/kademlia/dht_state.hpp"
 #include "libtorrent/kademlia/announce_flags.hpp"
 #include "libtorrent/aux_/resolver.hpp"
+#include "libtorrent/aux_/dns_resolver.hpp"
 #include "libtorrent/aux_/invariant_check.hpp"
 #include "libtorrent/extensions.hpp"
 #include "libtorrent/aux_/portmap.hpp"
@@ -428,7 +429,13 @@ namespace aux {
 			{ return m_peer_allocator; }
 
 			io_context& get_context() override { return m_io_context; }
-			resolver_interface& get_resolver() override { return m_host_resolver; }
+			resolver_interface& get_resolver() override
+			{
+				// when an interface-bound DNS server is configured, resolve through
+				// it instead of the (unbound) system resolver -- see update_dns_server().
+				if (m_dns_resolver) return *m_dns_resolver;
+				return m_host_resolver;
+			}
 
 			aux::vector<torrent*>& torrent_list(torrent_list_index_t i) override
 			{
@@ -877,6 +884,7 @@ namespace aux {
 			void update_dht();
 			void update_count_slow();
 			void update_dht_bootstrap_nodes();
+			void update_dns_server();
 
 			void update_socket_buffer_size();
 			void update_dht_announce_interval();
@@ -987,6 +995,11 @@ namespace aux {
 			peer_class_t m_local_peer_class{0};
 
 			resolver m_host_resolver;
+
+			// when settings_pack::dns_server is set, an interface-bound DNS-over-UDP
+			// resolver used in preference to m_host_resolver (the system resolver),
+			// so name lookups stay on the configured outgoing interface.
+			std::unique_ptr<dns_resolver> m_dns_resolver;
 
 			tracker_manager m_tracker_manager;
 

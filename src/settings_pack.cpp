@@ -150,7 +150,8 @@ constexpr int DISK_WRITE_MODE = settings_pack::enable_os_cache;
 		SET(i2p_hostname, "", &session_impl::update_i2p_bridge),
 		SET(peer_fingerprint, "-LT20D0-", nullptr),
 		SET(dht_bootstrap_nodes, "dht.libtorrent.org:25401", &session_impl::update_dht_bootstrap_nodes),
-		SET(natpmp_gateway, "", nullptr)
+		SET(natpmp_gateway, "", nullptr),
+		SET(dns_server, "", &session_impl::update_dns_server)
 	}});
 
 	CONSTEXPR_SETTINGS
