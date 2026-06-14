@@ -5237,6 +5237,18 @@ namespace {
 			bind_ep.address(bind_socket_to_device(m_io_context, s
 				, remote_address.is_v4() ? tcp::v4() : tcp::v6()
 				, ifname.c_str(), bind_ep.port(), ec));
+
+			// An explicit outgoing interface was requested. If we could not pin
+			// the socket to a concrete source address (the interface resolved to
+			// the unspecified "any" address), refuse rather than let the OS route
+			// the connection out an arbitrary interface and leak the real address.
+			// Fail closed. We still honour an explicit "any" literal in the
+			// outgoing-interfaces list (0.0.0.0 / ::), which means "no preference".
+			if (!ec && bind_ep.address().is_unspecified()
+				&& ifname != "0.0.0.0" && ifname != "::")
+			{
+				ec.assign(boost::system::errc::address_not_available, generic_category());
+			}
 			return bind_ep;
 		}
 
