@@ -3030,7 +3030,8 @@ namespace {
 		"block_uploaded", "alerts_dropped", "socks5",
 		"file_prio", "oversized_file", "torrent_conflict",
 		"peer_info", "file_progress", "piece_info",
-		"piece_availability", "tracker_list"
+		"piece_availability", "tracker_list",
+		"vpn_external_address", "vpn_leak"
 		}};
 
 		TORRENT_ASSERT(alert_type >= 0);
@@ -3194,6 +3195,39 @@ namespace {
 #endif
 	}
 
+	vpn_external_address_alert::vpn_external_address_alert(aux::stack_allocator&
+		, address const& ip, bool const b)
+		: external_address(ip)
+		, bound(b)
+	{}
+
+	std::string vpn_external_address_alert::message() const
+	{
+#ifdef TORRENT_DISABLE_ALERT_MSG
+		return {};
+#else
+		return "VPN guard: external address " + external_address.to_string()
+			+ (bound ? " (bound interface)" : " (default route)");
+#endif
+	}
+
+	vpn_leak_alert::vpn_leak_alert(aux::stack_allocator&
+		, address const& observed, address const& forbidden)
+		: observed_address(observed)
+		, forbidden_address(forbidden)
+	{}
+
+	std::string vpn_leak_alert::message() const
+	{
+#ifdef TORRENT_DISABLE_ALERT_MSG
+		return {};
+#else
+		return "VPN guard: egress leak detected, observed external address "
+			+ observed_address.to_string() + " matches forbidden "
+			+ forbidden_address.to_string() + " -- session paused";
+#endif
+	}
+
 	// this will no longer be necessary in C++17
 	constexpr alert_category_t torrent_removed_alert::static_category;
 	constexpr alert_category_t read_piece_alert::static_category;
@@ -3293,6 +3327,8 @@ namespace {
 	constexpr alert_category_t piece_info_alert::static_category;
 	constexpr alert_category_t piece_availability_alert::static_category;
 	constexpr alert_category_t tracker_list_alert::static_category;
+	constexpr alert_category_t vpn_external_address_alert::static_category;
+	constexpr alert_category_t vpn_leak_alert::static_category;
 #if TORRENT_ABI_VERSION == 1
 	constexpr alert_category_t anonymous_mode_alert::static_category;
 	constexpr alert_category_t mmap_cache_alert::static_category;

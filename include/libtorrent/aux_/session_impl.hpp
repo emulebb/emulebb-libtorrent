@@ -885,6 +885,11 @@ namespace aux {
 			void update_count_slow();
 			void update_dht_bootstrap_nodes();
 			void update_dns_server();
+			void update_vpn_guard();
+			void on_vpn_guard_timer(error_code const& ec);
+			void run_vpn_probes();
+			void on_vpn_probe_result(address const& observed, bool bound);
+			bool vpn_address_forbidden(address const& a) const;
 
 			void update_socket_buffer_size();
 			void update_dht_announce_interval();
@@ -1330,6 +1335,12 @@ namespace aux {
 			// object. This closes the file that's been opened the longest every
 			// time it's called, to force the windows disk cache to be flushed
 			deadline_timer m_close_file_timer;
+
+			// VPN egress guard (see settings_pack::vpn_guard_*): periodically
+			// STUN/HTTP-probes the bound socket's public IP and pauses everything
+			// if it falls in the forbidden set.
+			deadline_timer m_vpn_guard_timer;
+			bool m_vpn_guard_paused = false;
 
 			// the index of the torrent that will be offered to
 			// connect to a peer next time on_tick is called.

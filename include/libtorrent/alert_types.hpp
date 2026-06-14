@@ -99,7 +99,7 @@ namespace libtorrent {
 	constexpr int user_alert_id = 10000;
 
 	// this constant represents "max_alert_index" + 1
-	constexpr int num_alert_types = 105;
+	constexpr int num_alert_types = 107;
 
 	// internal
 	constexpr int abi_alert_count = 128;
@@ -3110,6 +3110,50 @@ TORRENT_VERSION_NAMESPACE_3_END
 
 		// list of trackers and their status for the torrent
 		std::vector<announce_entry> trackers;
+	};
+
+	// Posted with the public egress IP observed by a STUN Binding Request sent
+	// from the VPN-guard probe socket (see settings_pack::vpn_guard_stun_server).
+	// ``bound`` is true when the probe used the bound listen interface (the
+	// normal case) and false for a default-route ("clear") probe.
+	struct TORRENT_EXPORT vpn_external_address_alert final : alert
+	{
+		// internal
+		TORRENT_UNEXPORT vpn_external_address_alert(aux::stack_allocator& alloc
+			, address const& ip, bool bound);
+
+		TORRENT_DEFINE_ALERT(vpn_external_address_alert, 105)
+
+		static constexpr alert_category_t static_category = alert_category::status;
+		std::string message() const override;
+
+		// the public IP the STUN server observed for our probe socket
+		aux::noexcept_movable<address> external_address;
+
+		// true if the probe egressed the bound (VPN) interface
+		bool bound;
+	};
+
+	// Posted when the VPN guard detects that the bound socket's public egress IP
+	// equals settings_pack::vpn_guard_forbidden_address -- i.e. traffic is NOT
+	// going through the expected VPN tunnel. The session is paused and the DHT
+	// stopped (fail closed) before this alert is posted.
+	struct TORRENT_EXPORT vpn_leak_alert final : alert
+	{
+		// internal
+		TORRENT_UNEXPORT vpn_leak_alert(aux::stack_allocator& alloc
+			, address const& observed, address const& forbidden);
+
+		TORRENT_DEFINE_ALERT_PRIO(vpn_leak_alert, 106, alert_priority::critical)
+
+		static constexpr alert_category_t static_category = alert_category::error;
+		std::string message() const override;
+
+		// the public egress IP that was observed
+		aux::noexcept_movable<address> observed_address;
+
+		// the forbidden ("real") IP it matched
+		aux::noexcept_movable<address> forbidden_address;
 	};
 
 	// internal

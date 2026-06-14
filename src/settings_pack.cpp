@@ -151,7 +151,10 @@ constexpr int DISK_WRITE_MODE = settings_pack::enable_os_cache;
 		SET(peer_fingerprint, "-LT20D0-", nullptr),
 		SET(dht_bootstrap_nodes, "dht.libtorrent.org:25401", &session_impl::update_dht_bootstrap_nodes),
 		SET(natpmp_gateway, "", nullptr),
-		SET(dns_server, "", &session_impl::update_dns_server)
+		SET(dns_server, "", &session_impl::update_dns_server),
+		SET(vpn_guard_stun_server, "", &session_impl::update_vpn_guard),
+		SET(vpn_guard_forbidden_address, "", &session_impl::update_vpn_guard),
+		SET(vpn_guard_http_echo, "", &session_impl::update_vpn_guard)
 	}});
 
 	CONSTEXPR_SETTINGS
