@@ -48,6 +48,13 @@
     "Interface-bound DNS-over-UDP resolver selected by settings_pack::dns_server.",
     "VPN egress guard: bound STUN (multi-server) + bound HTTP IP-echo probes, allow-list CIDR match (vpn_guard_allowed_cidrs), fail-closed pause+stop_dht on a leak (vpn_leak_alert)."
   ],
+  "presenceGuards": [
+    { "path": "include/libtorrent/settings_pack.hpp", "contains": ["vpn_mode", "dns_server", "vpn_guard_stun_server", "vpn_guard_allowed_cidrs", "vpn_guard_http_echo"] },
+    { "path": "src/settings_pack.cpp", "contains": ["update_vpn_guard", "update_dns_server"] },
+    { "path": "include/libtorrent/alert_types.hpp", "contains": ["vpn_external_address_alert", "vpn_leak_alert", "num_alert_types = 107"] },
+    { "path": "include/libtorrent/aux_/bind_to_device.hpp", "contains": ["IP_UNICAST_IF", "bind_socket_to_interface_index"] },
+    { "path": "include/libtorrent/enum_net.hpp", "contains": ["interface_index_for_address", "if_index"] }
+  ],
   "rebaseWorkflow": [
     "Scheduled GitHub workflow .github/workflows/nightly-upstream.yml checks upstream/RC_2_0 daily and exits when upstream is already contained in origin/RC_2_0.",
     "When upstream moved it rebases automation/upstream-nightly on upstream/RC_2_0 and STOPS on conflicts (it does not touch RC_2_0). The heavy C++/Qt build is intentionally NOT run in CI; a clean rebase pushes the sync branch for a human/local build to validate.",
