@@ -36,7 +36,9 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include "libtorrent/deadline_timer.hpp"
 #include "libtorrent/random.hpp"
@@ -160,82 +162,166 @@ namespace {
 
 	constexpr int max_stun_response = 1500;
 
-	struct probe_state
-	{
-		explicit probe_state(io_context& ios) : sock(ios), timer(ios) {}
-		udp::socket sock;
-		deadline_timer timer;
-		udp::endpoint sender;
-		std::array<char, 12> txid{};
-		std::array<char, max_stun_response> recv_buf{};
-		std::function<void(error_code const&, address const&)> handler;
-		bool done = false;
+	struct stun_server { char const* host; std::uint16_t port; };
+
+	// Built-in public STUN servers, kept in sync with the eMuleBB
+	// (StunProbeSeams::GetStunIpv4ProbeServers) and emulebb-rust
+	// (DEFAULT_STUN_SERVERS) lists. Google is UDP-only on 19302; the rest answer on
+	// the IANA STUN port 3478.
+	constexpr stun_server default_servers[] = {
+		{"stun.l.google.com", 19302},
+		{"stun1.l.google.com", 19302},
+		{"stun.cloudflare.com", 3478},
+		{"stun.nextcloud.com", 3478},
 	};
 
-	void finish(std::shared_ptr<probe_state> st, error_code const& ec, address const& addr)
+	struct server_probe;
+
+	// Shared across all per-server probes in one stun_probe() call: the handler is
+	// invoked exactly once -- on the first success, or once every server has failed.
+	struct multi_state
 	{
-		if (st->done) return;
-		st->done = true;
+		std::function<void(error_code const&, address const&)> handler;
+		int remaining = 0;
+		bool done = false;
+		error_code last_error;
+		std::vector<std::shared_ptr<server_probe>> probes; // for eager cancellation
+	};
+
+	// One in-flight probe to a single server (async DNS -> connect -> send -> recv),
+	// bounded by a single timer covering the whole sequence.
+	struct server_probe
+	{
+		explicit server_probe(io_context& ios) : sock(ios), timer(ios), resolver(ios) {}
+		udp::socket sock;
+		deadline_timer timer;
+		udp::resolver resolver;
+		std::array<char, 12> txid{};
+		std::array<char, max_stun_response> recv_buf{};
+		std::shared_ptr<multi_state> ms;
+		bool finished = false;
+	};
+
+	void cancel_probe(server_probe& sp)
+	{
+		sp.finished = true;
 		error_code ignore;
-		st->timer.cancel();
-		st->sock.close(ignore);
-		if (st->handler) st->handler(ec, addr);
+		sp.resolver.cancel();
+		sp.timer.cancel();
+		sp.sock.close(ignore);
+	}
+
+	void finish(std::shared_ptr<server_probe> sp, error_code const& ec, address const& addr)
+	{
+		if (sp->finished) return;
+		auto const ms = sp->ms;
+		if (ms->done) { cancel_probe(*sp); return; }
+		if (!ec)
+		{
+			ms->done = true;
+			// first success wins -- cancel every other in-flight probe immediately
+			for (auto const& p : ms->probes)
+				if (p) cancel_probe(*p);
+			if (ms->handler) ms->handler(ec, addr);
+			return;
+		}
+		cancel_probe(*sp);
+		ms->last_error = ec;
+		if (--ms->remaining <= 0)
+		{
+			ms->done = true;
+			if (ms->handler) ms->handler(ms->last_error, address());
+		}
 	}
 
 } // anonymous namespace
 
-void stun_probe(io_context& ios, udp::endpoint const& server
-	, address const& bind_address, int if_index
+void stun_probe(io_context& ios, address const& bind_address, int if_index
 	, std::function<void(error_code const&, address const&)> handler)
 {
-	auto st = std::make_shared<probe_state>(ios);
-	st->handler = std::move(handler);
+	auto ms = std::make_shared<multi_state>();
+	ms->handler = std::move(handler);
+	ms->remaining = int(sizeof(default_servers) / sizeof(default_servers[0]));
 
-	for (int i = 0; i < 3; ++i)
+	for (stun_server const& srv : default_servers)
 	{
-		std::uint32_t const r = libtorrent::random(0xffffffff);
-		std::memcpy(st->txid.data() + i * 4, &r, 4);
-	}
+		auto sp = std::make_shared<server_probe>(ios);
+		sp->ms = ms;
+		ms->probes.push_back(sp);
 
-	error_code ec;
-	st->sock.open(server.protocol(), ec);
-	if (!ec && !bind_address.is_unspecified()
-		&& bind_address.is_v4() == server.address().is_v4())
-	{
+		for (int i = 0; i < 3; ++i)
+		{
+			std::uint32_t const r = libtorrent::random(0xffffffff);
+			std::memcpy(sp->txid.data() + i * 4, &r, 4);
+		}
+
+		// One deadline for the whole probe: resolve + connect + send + recv.
+		sp->timer.expires_after(seconds(5));
+		sp->timer.async_wait([sp](error_code const& tec)
+		{
+			if (tec) return; // cancelled
+			finish(sp, error_code(boost::system::errc::timed_out, generic_category()), address());
+		});
+
+		sp->resolver.async_resolve(srv.host, std::to_string(srv.port)
+			, [sp, bind_address, if_index](error_code const& rec, udp::resolver::results_type results)
+		{
+			if (sp->finished) return;
+			if (rec) { finish(sp, rec, address()); return; }
+
+			// pick the first resolved endpoint of the bind address family
+			udp::endpoint server;
+			bool found = false;
+			for (auto const& entry : results)
+			{
+				if (bind_address.is_unspecified()
+					|| entry.endpoint().address().is_v4() == bind_address.is_v4())
+				{
+					server = entry.endpoint();
+					found = true;
+					break;
+				}
+			}
+			if (!found)
+			{
+				finish(sp, error_code(boost::system::errc::address_family_not_supported, generic_category()), address());
+				return;
+			}
+
+			error_code ec;
+			sp->sock.open(server.protocol(), ec);
+			if (!ec && !bind_address.is_unspecified()
+				&& bind_address.is_v4() == server.address().is_v4())
+			{
 #ifdef TORRENT_WINDOWS
-		aux::bind_socket_to_interface_index(st->sock, if_index, bind_address.is_v4(), ec);
-		ec.clear();
+				aux::bind_socket_to_interface_index(sp->sock, if_index, bind_address.is_v4(), ec);
+				ec.clear();
 #else
-		TORRENT_UNUSED(if_index);
+				TORRENT_UNUSED(if_index);
 #endif
-		st->sock.bind(udp::endpoint(bind_address, 0), ec);
+				sp->sock.bind(udp::endpoint(bind_address, 0), ec);
+			}
+			// connect() so the kernel drops datagrams from any source other than the
+			// server: defends a security gate from spoofed responses and lets us use
+			// async_send/async_receive without inspecting the sender.
+			if (!ec) sp->sock.connect(server, ec);
+			if (ec) { finish(sp, ec, address()); return; }
+
+			auto const req = std::make_shared<std::array<char, 20>>(build_request(sp->txid));
+			sp->sock.async_send(boost::asio::buffer(*req)
+				, [req](error_code const&, std::size_t) {});
+
+			sp->sock.async_receive(boost::asio::buffer(sp->recv_buf)
+				, [sp](error_code const& rrec, std::size_t bytes)
+			{
+				if (sp->finished) return;
+				if (rrec) { finish(sp, rrec, address()); return; }
+				address reflexive;
+				error_code const pec = parse_response(sp->recv_buf.data(), int(bytes), sp->txid, reflexive);
+				finish(sp, pec, reflexive);
+			});
+		});
 	}
-	if (ec)
-	{
-		post(ios, [h = st->handler, ec]() { h(ec, address()); });
-		return;
-	}
-
-	auto const req = std::make_shared<std::array<char, 20>>(build_request(st->txid));
-	st->sock.async_send_to(boost::asio::buffer(*req), server
-		, [req](error_code const&, std::size_t) {});
-
-	st->sock.async_receive_from(boost::asio::buffer(st->recv_buf), st->sender
-		, [st](error_code const& rec, std::size_t bytes)
-	{
-		if (st->done) return;
-		if (rec) { finish(st, rec, address()); return; }
-		address reflexive;
-		error_code const pec = parse_response(st->recv_buf.data(), int(bytes), st->txid, reflexive);
-		finish(st, pec, reflexive);
-	});
-
-	st->timer.expires_after(seconds(5));
-	st->timer.async_wait([st](error_code const& tec)
-	{
-		if (tec) return; // cancelled
-		finish(st, error_code(boost::system::errc::timed_out, generic_category()), address());
-	});
 }
 
 }
