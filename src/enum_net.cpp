@@ -882,6 +882,8 @@ int _System __libsocket_sysctl(int* mib, u_int namelen, void *oldp, size_t *oldl
 
 					r.preferred = unicast->DadState == IpDadStatePreferred;
 					r.interface_address = sockaddr_to_address(unicast->Address.lpSockaddr);
+					r.if_index = (family == AF_INET)
+						? int(adapter->IfIndex) : int(adapter->Ipv6IfIndex);
 					int const max_prefix_len = family == AF_INET ? 32 : 128;
 
 					if (unicast->Length <= offsetof(IP_ADAPTER_UNICAST_ADDRESS, OnLinkPrefixLength))
@@ -1502,5 +1504,16 @@ int _System __libsocket_sysctl(int* mib, u_int namelen, void *oldp, size_t *oldl
 			, [&addr](ip_interface const& iface)
 			{ return iface.interface_address == addr; });
 		return (iter == ifs.end()) ? std::string() : iter->name;
+	}
+
+	int interface_index_for_address(address const& addr, io_context& ios, error_code& ec)
+	{
+		std::vector<ip_interface> const ifs = enum_net_interfaces(ios, ec);
+		if (ec) return 0;
+
+		auto const iter = std::find_if(ifs.begin(), ifs.end()
+			, [&addr](ip_interface const& iface)
+			{ return iface.interface_address == addr; });
+		return (iter == ifs.end()) ? 0 : iter->if_index;
 	}
 }
