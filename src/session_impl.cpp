@@ -5716,44 +5716,88 @@ namespace {
 			{
 				udp::endpoint const server(srv, std::uint16_t(port));
 				aux::stun_probe(m_io_context, server, bind_addr, if_index
-					, [this](error_code const& e, address const& a)
+					, [this, bind_addr, if_index](error_code const& e, address const& a)
 				{
-					if (!e && !a.is_unspecified()) on_vpn_probe_result(a, true);
+					if (e || a.is_unspecified()) return;
+					on_vpn_probe_result(a, true);
+					// paranoid sequencing: only proceed to the HTTP/TCP check --
+					// which resolves the echo host (over the VPN DNS if dns_server
+					// is set) -- once STUN has confirmed egress is clean. This way
+					// we never even look up the echo hostname while a leak is live.
+					if (!vpn_address_forbidden(a))
+						run_http_probe(bind_addr, if_index);
 				});
 			}
 		}
 
-		// HTTP (TCP) probe: "ip[:port][/path]"
+		// HTTP (TCP) probe. When STUN is configured it gates this -- it runs only
+		// after a clean STUN result (see the stun_probe callback above), so the
+		// echo hostname is never even looked up while a leak is live. Run it
+		// directly here only when there is no STUN check to sequence it behind.
+		if (stun.empty())
+			run_http_probe(bind_addr, if_index);
+	}
+
+	void session_impl::run_http_probe(address const& bind_addr, int if_index)
+	{
+		// "host[:port][/path]" where host may be a hostname or an IP literal. The
+		// probe connection is bound/pinned to the tunnel; the echo host is
+		// resolved up front via the configured resolver (over the VPN DNS when
+		// settings_pack::dns_server is set). Connecting to the resolved IP while
+		// sending the real Host: header makes vhosted echo services work.
 		std::string const http = m_settings.get_str(settings_pack::vpn_guard_http_echo);
-		if (!http.empty())
+		if (http.empty()) return;
+
+		std::string authority = http;
+		std::string path = "/";
+		auto const slash = http.find('/');
+		if (slash != std::string::npos)
 		{
-			std::string authority = http;
-			std::string path = "/";
-			auto const slash = http.find('/');
-			if (slash != std::string::npos)
+			authority = http.substr(0, slash);
+			path = http.substr(slash);
+		}
+		std::string host = authority;
+		int port = 80;
+		auto const colon = authority.find(':');
+		if (colon != std::string::npos && authority.rfind(':') == colon)
+		{
+			host = authority.substr(0, colon);
+			port = std::atoi(authority.c_str() + colon + 1);
+		}
+		if (port <= 0 || port > 65535 || host.empty()) return;
+
+		auto const run_http = [this, bind_addr, if_index](tcp::endpoint const& server
+			, std::string const& host_header, std::string const& p)
+		{
+			aux::http_ip_probe(m_io_context, server, host_header, p, bind_addr, if_index
+				, [this](error_code const& e, address const& a)
 			{
-				authority = http.substr(0, slash);
-				path = http.substr(slash);
-			}
-			std::string host = authority;
-			int port = 80;
-			auto const colon = authority.find(':');
-			if (colon != std::string::npos && authority.rfind(':') == colon)
+				if (!e && !a.is_unspecified()) on_vpn_probe_result(a, true);
+			});
+		};
+
+		error_code ec;
+		address const srv = make_address(host, ec);
+		if (!ec)
+		{
+			// already an IP literal
+			run_http(tcp::endpoint(srv, std::uint16_t(port)), host, path);
+		}
+		else
+		{
+			// a hostname: resolve it (over the VPN DNS if configured), then
+			// connect to the resolved IP while sending Host: <hostname>.
+			get_resolver().async_resolve(host, resolver::abort_on_shutdown
+				, [this, host, path, port, bind_addr, run_http]
+					(error_code const& rec, std::vector<address> const& addrs)
 			{
-				host = authority.substr(0, colon);
-				port = std::atoi(authority.c_str() + colon + 1);
-			}
-			error_code ec;
-			address const srv = make_address(host, ec);
-			if (!ec && port > 0 && port <= 65535)
-			{
-				tcp::endpoint const server(srv, std::uint16_t(port));
-				aux::http_ip_probe(m_io_context, server, host, path, bind_addr, if_index
-					, [this](error_code const& e, address const& a)
-				{
-					if (!e && !a.is_unspecified()) on_vpn_probe_result(a, true);
-				});
-			}
+				if (rec || addrs.empty()) return;
+				address chosen;
+				for (auto const& a : addrs)
+					if (a.is_v4() == bind_addr.is_v4()) { chosen = a; break; }
+				if (chosen.is_unspecified()) chosen = addrs.front();
+				run_http(tcp::endpoint(chosen, std::uint16_t(port)), host, path);
+			});
 		}
 	}
 
