@@ -5184,6 +5184,32 @@ namespace {
 #endif
 				impl = boost::get<utp_stream>(s).get_impl();
 
+			// when explicit outgoing interfaces are configured, a uTP socket may
+			// only use a listen socket that belongs to one of them. Otherwise the
+			// selection below (and especially the random with_gateways fallback)
+			// could pick an off-interface listen socket and send the first uTP
+			// ST_SYN from the wrong NIC before the post-connect verification in
+			// peer_connection tears it down -- a one-packet source-address leak.
+			auto const allowed_outgoing = [this](std::shared_ptr<listen_socket_t> const& ls)
+			{
+				if (m_outgoing_interfaces.empty()) return true;
+				if (ls->flags & listen_socket_t::proxy) return true;
+				for (auto const& s : m_outgoing_interfaces)
+				{
+					error_code err;
+					address const ip = make_address(s.c_str(), err);
+					if (!err)
+					{
+						if (ip == ls->local_endpoint.address()) return true;
+					}
+					else if (s == ls->device)
+					{
+						return true;
+					}
+				}
+				return false;
+			};
+
 			std::vector<std::shared_ptr<listen_socket_t>> with_gateways;
 			std::shared_ptr<listen_socket_t> match;
 			for (auto& ls : m_listen_sockets)
@@ -5193,6 +5219,9 @@ namespace {
 					&& is_v4(ls->local_endpoint) != remote_address.is_v4())
 					continue;
 				if (ls->ssl != ssl) continue;
+				// fail closed: never consider a listen socket outside the
+				// configured outgoing interfaces.
+				if (!allowed_outgoing(ls)) continue;
 				if (!(ls->flags & listen_socket_t::local_network))
 					with_gateways.push_back(ls);
 
