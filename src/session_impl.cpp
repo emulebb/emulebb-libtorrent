@@ -1925,8 +1925,8 @@ namespace {
 #ifdef TORRENT_WINDOWS
 		// The UDP socket carries DHT and uTP traffic. bind() to the listen
 		// address does not pin the egress interface on Windows (weak host
-		// model), so also force it with IP_UNICAST_IF. Best-effort: a pin
-		// failure does not fail listening (vpn_mode escalates it to fail-closed).
+		// model), so also force it with IP_UNICAST_IF. Best-effort by default;
+		// vpn_mode escalates a failure to pin into a hard listen failure.
 		if (!udp_bind_ep.address().is_unspecified())
 		{
 			error_code iec;
@@ -1934,6 +1934,23 @@ namespace {
 			error_code sec;
 			aux::bind_socket_to_interface_index(ret->udp_sock->sock, idx
 				, udp_bind_ep.address().is_v4(), sec);
+
+			if (m_settings.get_bool(settings_pack::vpn_mode) && (idx <= 0 || sec))
+			{
+				// We could not guarantee the UDP egress interface. Fail closed
+				// rather than risk DHT/uTP leaking out another NIC.
+				error_code const fail = sec ? sec
+					: error_code(boost::system::errc::no_such_device, generic_category());
+#ifndef TORRENT_DISABLE_LOGGING
+				if (should_log())
+					session_log("vpn_mode: could not pin UDP egress interface for %s: %s"
+						, udp_bind_ep.address().to_string().c_str(), fail.message().c_str());
+#endif
+				if (m_alerts.should_post<listen_failed_alert>())
+					m_alerts.emplace_alert<listen_failed_alert>(lep.device
+						, bind_ep, operation_t::sock_bind, fail, udp_sock_type);
+				return ret;
+			}
 		}
 #endif
 
@@ -2138,6 +2155,17 @@ namespace {
 #endif
 			}
 
+			if (m_settings.get_bool(settings_pack::vpn_mode))
+			{
+				// In vpn_mode never expand an unspecified (0.0.0.0 / ::) listen
+				// interface to "all interfaces" -- that would also open listen and
+				// UDP sockets on the LAN, off-tunnel. Require an explicit interface;
+				// drop unspecified endpoints (fail closed to no listener).
+				eps.erase(std::remove_if(eps.begin(), eps.end()
+					, [](listen_endpoint_t const& ep) { return ep.addr.is_unspecified(); })
+					, eps.end());
+			}
+
 #if defined TORRENT_ANDROID && __ANDROID_API__ >= 24
 			// For Android API >= 24, enum_routes with the current NETLINK based
 			// implementation is unsupported (maybe in the future the operation
@@ -2287,13 +2315,15 @@ namespace {
 
 		ec.clear();
 
-		if (m_settings.get_bool(settings_pack::enable_natpmp))
+		bool const vpn_mode = m_settings.get_bool(settings_pack::vpn_mode);
+
+		if (m_settings.get_bool(settings_pack::enable_natpmp) && !vpn_mode)
 		{
 			for (auto const& s : new_sockets)
 				start_natpmp(s);
 		}
 
-		if (m_settings.get_bool(settings_pack::enable_upnp))
+		if (m_settings.get_bool(settings_pack::enable_upnp) && !vpn_mode)
 		{
 			for (auto const& s : new_sockets)
 				start_upnp(s);
@@ -5279,6 +5309,19 @@ namespace {
 			{
 				ec.assign(boost::system::errc::address_not_available, generic_category());
 			}
+#ifdef TORRENT_WINDOWS
+			// In vpn_mode the IP_UNICAST_IF egress pin (applied inside
+			// bind_socket_to_device) is mandatory: if we cannot resolve the
+			// bound address to an interface index, we cannot guarantee the NIC,
+			// so fail closed instead of relying on the routing table.
+			if (!ec && m_settings.get_bool(settings_pack::vpn_mode)
+				&& !bind_ep.address().is_unspecified())
+			{
+				error_code iec;
+				if (interface_index_for_address(bind_ep.address(), m_io_context, iec) <= 0)
+					ec.assign(boost::system::errc::no_such_device, generic_category());
+			}
+#endif
 			return bind_ep;
 		}
 
@@ -5505,7 +5548,10 @@ namespace {
 
 	void session_impl::update_upnp()
 	{
-		if (m_settings.get_bool(settings_pack::enable_upnp))
+		// vpn_mode disables LAN-scoped services: UPnP talks SSDP to the local
+		// gateway and would map ports on the physical router, off-tunnel.
+		if (m_settings.get_bool(settings_pack::enable_upnp)
+			&& !m_settings.get_bool(settings_pack::vpn_mode))
 			start_upnp();
 		else
 			stop_upnp();
@@ -5513,7 +5559,8 @@ namespace {
 
 	void session_impl::update_natpmp()
 	{
-		if (m_settings.get_bool(settings_pack::enable_natpmp))
+		if (m_settings.get_bool(settings_pack::enable_natpmp)
+			&& !m_settings.get_bool(settings_pack::vpn_mode))
 			start_natpmp();
 		else
 			stop_natpmp();
@@ -5521,7 +5568,10 @@ namespace {
 
 	void session_impl::update_lsd()
 	{
-		if (m_settings.get_bool(settings_pack::enable_lsd))
+		// vpn_mode disables Local Service Discovery: it multicasts our infohashes
+		// to the local segment, which is pure leak surface for a VPN-bound client.
+		if (m_settings.get_bool(settings_pack::enable_lsd)
+			&& !m_settings.get_bool(settings_pack::vpn_mode))
 			start_lsd();
 		else
 			stop_lsd();
