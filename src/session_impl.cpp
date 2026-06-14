@@ -5722,9 +5722,9 @@ namespace {
 					on_vpn_probe_result(a, true);
 					// paranoid sequencing: only proceed to the HTTP/TCP check --
 					// which resolves the echo host (over the VPN DNS if dns_server
-					// is set) -- once STUN has confirmed egress is clean. This way
-					// we never even look up the echo hostname while a leak is live.
-					if (!vpn_address_forbidden(a))
+					// is set) -- once STUN has confirmed egress is within the
+					// allowed set. We never look up the echo hostname during a leak.
+					if (vpn_address_allowed(a))
 						run_http_probe(bind_addr, if_index);
 				});
 			}
@@ -5801,10 +5801,12 @@ namespace {
 		}
 	}
 
-	bool session_impl::vpn_address_forbidden(address const& a) const
+	bool session_impl::vpn_address_allowed(address const& a) const
 	{
-		std::string const list = m_settings.get_str(settings_pack::vpn_guard_forbidden_address);
-		if (list.empty() || a.is_unspecified()) return false;
+		std::string const list = m_settings.get_str(settings_pack::vpn_guard_allowed_cidrs);
+		// no allow-list configured -> unrestricted (guard is observe-only)
+		if (list.empty()) return true;
+		if (a.is_unspecified()) return true;
 
 		std::size_t start = 0;
 		while (start <= list.size())
@@ -5843,7 +5845,7 @@ namespace {
 		if (m_alerts.should_post<vpn_external_address_alert>())
 			m_alerts.emplace_alert<vpn_external_address_alert>(observed, bound);
 
-		if (vpn_address_forbidden(observed))
+		if (!vpn_address_allowed(observed))
 		{
 			if (!m_vpn_guard_paused)
 			{
@@ -5855,7 +5857,7 @@ namespace {
 #endif
 			}
 			if (m_alerts.should_post<vpn_leak_alert>())
-				m_alerts.emplace_alert<vpn_leak_alert>(observed, observed);
+				m_alerts.emplace_alert<vpn_leak_alert>(observed);
 		}
 		else if (m_vpn_guard_paused)
 		{

@@ -3212,9 +3212,8 @@ namespace {
 	}
 
 	vpn_leak_alert::vpn_leak_alert(aux::stack_allocator&
-		, address const& observed, address const& forbidden)
+		, address const& observed)
 		: observed_address(observed)
-		, forbidden_address(forbidden)
 	{}
 
 	std::string vpn_leak_alert::message() const
@@ -3223,8 +3222,8 @@ namespace {
 		return {};
 #else
 		return "VPN guard: egress leak detected, observed external address "
-			+ observed_address.to_string() + " matches forbidden "
-			+ forbidden_address.to_string() + " -- session paused";
+			+ observed_address.to_string()
+			+ " is not within the allowed VPN range(s) -- session paused";
 #endif
 	}
 
