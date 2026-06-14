@@ -43,18 +43,28 @@ POSSIBILITY OF SUCH DAMAGE.
 namespace libtorrent {
 namespace aux {
 
-// Sends a single RFC-5389 STUN Binding Request to `server` and reports the
-// reflexive (public, server-observed) address from the XOR-MAPPED-ADDRESS
-// attribute of the response. The query socket is bound to `bind_address` and,
-// on Windows, egress-pinned to `if_index` via IP_UNICAST_IF -- so the reflexive
-// address reflects the *actual* egress interface (e.g. a VPN tunnel). Pass an
-// unspecified bind_address (and if_index 0) for a default-route ("clear") probe.
+// Races RFC-5389 STUN Binding Requests against a built-in set of public STUN
+// servers concurrently (resolving each hostname asynchronously) and reports the
+// reflexive (public, server-observed) address from the first valid
+// XOR-MAPPED-ADDRESS / MAPPED-ADDRESS response. Resilience comes from the
+// multi-server fan-out, not from per-socket retransmits (each server is queried
+// once); when one server wins, the remaining in-flight probes are cancelled
+// immediately. Every query socket is bound to `bind_address` and, on Windows,
+// egress-pinned to `if_index` via IP_UNICAST_IF -- so the reflexive address
+// reflects the *actual* egress interface (e.g. a VPN tunnel) -- and connect()ed
+// to its server so the kernel drops datagrams from any other source (no spoofed
+// responses). Each per-server probe (resolve + connect + send + recv) is bounded
+// by a single timeout. Pass an unspecified bind_address (and if_index 0) for a
+// default-route ("clear") probe.
+//
+// The built-in server list is kept in sync with the eMuleBB
+// (StunProbeSeams::GetStunIpv4ProbeServers) and emulebb-rust (DEFAULT_STUN_SERVERS)
+// probes.
 //
 // `handler` is invoked exactly once: with an empty error_code and the reflexive
-// address on success, or with an error_code (and an unspecified address) on
-// failure/timeout.
+// address on the first success, or with an error_code (and an unspecified
+// address) once every server has failed/timed out.
 TORRENT_EXTRA_EXPORT void stun_probe(io_context& ios
-	, udp::endpoint const& server
 	, address const& bind_address
 	, int if_index
 	, std::function<void(error_code const&, address const&)> handler);
