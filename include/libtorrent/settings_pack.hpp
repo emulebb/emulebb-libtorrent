@@ -1055,6 +1055,15 @@ namespace aux {
 			// increase network load.
 			allow_multiple_connections_per_pid,
 
+			// when set, the session runs in a strict "VPN mode" that treats the
+			// configured outgoing/listen interface as the only permitted egress
+			// and fails closed rather than leaking the real address. It forces
+			// enable_lsd, enable_upnp and enable_natpmp off (LAN-scoped services),
+			// refuses to open an unspecified (0.0.0.0 / ::) listen socket, and
+			// turns the otherwise best-effort egress-interface pinning into a hard
+			// requirement. Intended for clients bound to a VPN tunnel.
+			vpn_mode,
+
 			max_bool_setting_internal
 		};
 
