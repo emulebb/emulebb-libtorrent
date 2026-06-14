@@ -5712,36 +5712,24 @@ namespace {
 		}
 #endif
 
-		// STUN (UDP) probe
+		// STUN (UDP) probe. aux::stun_probe races a built-in set of public STUN
+		// servers (resolved + bound/pinned to the tunnel), so vpn_guard_stun_server
+		// is now just an enable toggle -- any non-empty value turns it on.
 		std::string const stun = m_settings.get_str(settings_pack::vpn_guard_stun_server);
 		if (!stun.empty())
 		{
-			std::string host = stun;
-			int port = 3478;
-			auto const colon = stun.find(':');
-			if (colon != std::string::npos && stun.rfind(':') == colon)
+			aux::stun_probe(m_io_context, bind_addr, if_index
+				, [this, bind_addr, if_index](error_code const& e, address const& a)
 			{
-				host = stun.substr(0, colon);
-				port = std::atoi(stun.c_str() + colon + 1);
-			}
-			error_code ec;
-			address const srv = make_address(host, ec);
-			if (!ec && port > 0 && port <= 65535)
-			{
-				udp::endpoint const server(srv, std::uint16_t(port));
-				aux::stun_probe(m_io_context, server, bind_addr, if_index
-					, [this, bind_addr, if_index](error_code const& e, address const& a)
-				{
-					if (e || a.is_unspecified()) return;
-					on_vpn_probe_result(a, true);
-					// paranoid sequencing: only proceed to the HTTP/TCP check --
-					// which resolves the echo host (over the VPN DNS if dns_server
-					// is set) -- once STUN has confirmed egress is within the
-					// allowed set. We never look up the echo hostname during a leak.
-					if (vpn_address_allowed(a))
-						run_http_probe(bind_addr, if_index);
-				});
-			}
+				if (e || a.is_unspecified()) return;
+				on_vpn_probe_result(a, true);
+				// paranoid sequencing: only proceed to the HTTP/TCP check --
+				// which resolves the echo host (over the VPN DNS if dns_server
+				// is set) -- once STUN has confirmed egress is within the
+				// allowed set. We never look up the echo hostname during a leak.
+				if (vpn_address_allowed(a))
+					run_http_probe(bind_addr, if_index);
+			});
 		}
 
 		// HTTP (TCP) probe. When STUN is configured it gates this -- it runs only
