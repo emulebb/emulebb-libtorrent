@@ -406,6 +406,28 @@ namespace aux {
 			// outside a VPN tunnel). Empty means use the system resolver.
 			dns_server,
 
+			// VPN egress guard. When vpn_guard_stun_server is set (an "ip" or
+			// "ip:port", default STUN port 3478), the session periodically sends a
+			// STUN Binding Request from the bound listen socket to learn its real
+			// public egress IP (posted via vpn_external_address_alert). If
+			// vpn_guard_forbidden_address is also set and the observed egress IP
+			// equals it, traffic is NOT going through the expected VPN tunnel: the
+			// session is paused, the DHT is stopped and a vpn_leak_alert is posted
+			// (fail closed). Empty = guard disabled.
+			vpn_guard_stun_server,
+			vpn_guard_forbidden_address,
+
+			// optional TCP-path check for the VPN guard: an IP-echo HTTP endpoint
+			// as "ip[:port][/path]" (default port 80, path "/"). When set, the
+			// guard also issues a plaintext HTTP GET from the bound TCP socket and
+			// compares the returned public IP, covering the TCP egress path in
+			// addition to STUN's UDP path. Use an IP literal (no DNS in the guard).
+			vpn_guard_http_echo,
+
+			// vpn_guard_forbidden_address accepts a comma-separated list of IPs and
+			// CIDR ranges (e.g. "203.0.113.7,198.51.100.0/24"); a probe result that
+			// falls in any of them is treated as a leak.
+
 			max_string_setting_internal
 		};
 

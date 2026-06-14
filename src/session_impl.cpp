@@ -104,6 +104,8 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "libtorrent/error.hpp"
 #include "libtorrent/platform_util.hpp"
 #include "libtorrent/aux_/bind_to_device.hpp"
+#include "libtorrent/aux_/stun.hpp"
+#include "libtorrent/aux_/http_ip_probe.hpp"
 #include "libtorrent/hex.hpp" // to_hex, from_hex
 #include "libtorrent/aux_/scope_end.hpp"
 #include "libtorrent/aux_/set_socket_buffer.hpp"
@@ -566,6 +568,7 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 		, m_timer(m_io_context)
 		, m_lsd_announce_timer(m_io_context)
 		, m_close_file_timer(m_io_context)
+		, m_vpn_guard_timer(m_io_context)
 		, m_paused(flags & session::paused)
 	{
 #if !defined TORRENT_DISABLE_LOGGING || TORRENT_USE_ASSERTS
@@ -1071,6 +1074,7 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 		if (m_dns_resolver) m_dns_resolver->abort();
 
 		m_close_file_timer.cancel();
+		m_vpn_guard_timer.cancel();
 
 		// abort the main thread
 		m_abort = true;
@@ -5658,6 +5662,180 @@ namespace {
 		}
 #endif
 		m_dns_resolver = std::make_unique<dns_resolver>(m_io_context, server_ep, bind_addr, if_index);
+	}
+
+	void session_impl::update_vpn_guard()
+	{
+		std::string const stun = m_settings.get_str(settings_pack::vpn_guard_stun_server);
+		std::string const http = m_settings.get_str(settings_pack::vpn_guard_http_echo);
+		if (stun.empty() && http.empty())
+		{
+			m_vpn_guard_timer.cancel();
+			return;
+		}
+		// (re)start: probe shortly, then on a slow interval
+		m_vpn_guard_timer.expires_after(seconds(5));
+		m_vpn_guard_timer.async_wait(std::bind(&session_impl::on_vpn_guard_timer, this, _1));
+	}
+
+	void session_impl::on_vpn_guard_timer(error_code const& ec)
+	{
+		if (ec) return;
+		run_vpn_probes();
+		m_vpn_guard_timer.expires_after(seconds(300));
+		m_vpn_guard_timer.async_wait(std::bind(&session_impl::on_vpn_guard_timer, this, _1));
+	}
+
+	void session_impl::run_vpn_probes()
+	{
+		// pick the bound (non-LAN, non-proxy) listen address + interface index
+		address bind_addr;
+		for (auto const& ls : m_listen_sockets)
+		{
+			if (ls->flags & listen_socket_t::proxy) continue;
+			if (ls->flags & listen_socket_t::local_network) continue;
+			if (!ls->local_endpoint.address().is_unspecified())
+			{
+				bind_addr = ls->local_endpoint.address();
+				break;
+			}
+		}
+		if (bind_addr.is_unspecified() && !m_listen_sockets.empty())
+			bind_addr = m_listen_sockets.front()->local_endpoint.address();
+
+		int if_index = 0;
+#ifdef TORRENT_WINDOWS
+		if (!bind_addr.is_unspecified())
+		{
+			error_code iec;
+			if_index = interface_index_for_address(bind_addr, m_io_context, iec);
+		}
+#endif
+
+		// STUN (UDP) probe
+		std::string const stun = m_settings.get_str(settings_pack::vpn_guard_stun_server);
+		if (!stun.empty())
+		{
+			std::string host = stun;
+			int port = 3478;
+			auto const colon = stun.find(':');
+			if (colon != std::string::npos && stun.rfind(':') == colon)
+			{
+				host = stun.substr(0, colon);
+				port = std::atoi(stun.c_str() + colon + 1);
+			}
+			error_code ec;
+			address const srv = make_address(host, ec);
+			if (!ec && port > 0 && port <= 65535)
+			{
+				udp::endpoint const server(srv, std::uint16_t(port));
+				aux::stun_probe(m_io_context, server, bind_addr, if_index
+					, [this](error_code const& e, address const& a)
+				{
+					if (!e && !a.is_unspecified()) on_vpn_probe_result(a, true);
+				});
+			}
+		}
+
+		// HTTP (TCP) probe: "ip[:port][/path]"
+		std::string const http = m_settings.get_str(settings_pack::vpn_guard_http_echo);
+		if (!http.empty())
+		{
+			std::string authority = http;
+			std::string path = "/";
+			auto const slash = http.find('/');
+			if (slash != std::string::npos)
+			{
+				authority = http.substr(0, slash);
+				path = http.substr(slash);
+			}
+			std::string host = authority;
+			int port = 80;
+			auto const colon = authority.find(':');
+			if (colon != std::string::npos && authority.rfind(':') == colon)
+			{
+				host = authority.substr(0, colon);
+				port = std::atoi(authority.c_str() + colon + 1);
+			}
+			error_code ec;
+			address const srv = make_address(host, ec);
+			if (!ec && port > 0 && port <= 65535)
+			{
+				tcp::endpoint const server(srv, std::uint16_t(port));
+				aux::http_ip_probe(m_io_context, server, host, path, bind_addr, if_index
+					, [this](error_code const& e, address const& a)
+				{
+					if (!e && !a.is_unspecified()) on_vpn_probe_result(a, true);
+				});
+			}
+		}
+	}
+
+	bool session_impl::vpn_address_forbidden(address const& a) const
+	{
+		std::string const list = m_settings.get_str(settings_pack::vpn_guard_forbidden_address);
+		if (list.empty() || a.is_unspecified()) return false;
+
+		std::size_t start = 0;
+		while (start <= list.size())
+		{
+			std::size_t const comma = list.find(',', start);
+			std::string token = list.substr(start
+				, (comma == std::string::npos) ? std::string::npos : comma - start);
+			start = (comma == std::string::npos) ? (list.size() + 1) : (comma + 1);
+
+			// trim ASCII whitespace
+			while (!token.empty() && (token.front() == ' ' || token.front() == '\t')) token.erase(token.begin());
+			while (!token.empty() && (token.back() == ' ' || token.back() == '\t')) token.pop_back();
+			if (token.empty()) continue;
+
+			auto const slash = token.find('/');
+			error_code ec;
+			if (slash == std::string::npos)
+			{
+				address const net = make_address(token, ec);
+				if (!ec && net == a) return true;
+			}
+			else
+			{
+				address const net = make_address(token.substr(0, slash), ec);
+				if (ec || net.is_v4() != a.is_v4()) continue;
+				int const bits = std::atoi(token.c_str() + slash + 1);
+				address const mask = build_netmask(bits, family(net));
+				if (match_addr_mask(a, net, mask)) return true;
+			}
+		}
+		return false;
+	}
+
+	void session_impl::on_vpn_probe_result(address const& observed, bool const bound)
+	{
+		if (m_alerts.should_post<vpn_external_address_alert>())
+			m_alerts.emplace_alert<vpn_external_address_alert>(observed, bound);
+
+		if (vpn_address_forbidden(observed))
+		{
+			if (!m_vpn_guard_paused)
+			{
+				m_vpn_guard_paused = true;
+				// fail closed: stop all P2P
+				pause();
+#ifndef TORRENT_DISABLE_DHT
+				stop_dht();
+#endif
+			}
+			if (m_alerts.should_post<vpn_leak_alert>())
+				m_alerts.emplace_alert<vpn_leak_alert>(observed, observed);
+		}
+		else if (m_vpn_guard_paused)
+		{
+			// a clean probe after a leak: lift the guard pause and restore DHT
+			m_vpn_guard_paused = false;
+			resume();
+#ifndef TORRENT_DISABLE_DHT
+			update_dht();
+#endif
+		}
 	}
 
 	void session_impl::update_dht_bootstrap_nodes()
