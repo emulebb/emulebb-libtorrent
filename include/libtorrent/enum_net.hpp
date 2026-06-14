@@ -107,6 +107,11 @@ enum class if_state : std::uint8_t {
 
 		interface_flags flags = if_flags::up;
 		if_state state = if_state::unknown;
+
+		// the OS interface index that owns interface_address. Currently only
+		// populated on Windows (where it is needed for IP_UNICAST_IF egress
+		// pinning); 0 means unknown.
+		int if_index = 0;
 	};
 
 // internal
@@ -227,6 +232,12 @@ enum class if_state : std::uint8_t {
 	// returns the device name whose local address is ``addr``. If
 	// no such device is found, an empty string is returned.
 	TORRENT_EXTRA_EXPORT std::string device_for_address(address addr
+		, io_context& ios, error_code& ec);
+
+	// returns the OS interface index that owns ``addr``, or 0 if it cannot be
+	// determined. Used for IP_UNICAST_IF egress pinning on Windows, where a
+	// plain bind() to a source address does not select the outgoing interface.
+	TORRENT_EXTRA_EXPORT int interface_index_for_address(address const& addr
 		, io_context& ios, error_code& ec);
 
 }

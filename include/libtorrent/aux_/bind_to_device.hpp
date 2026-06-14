@@ -131,6 +131,52 @@ namespace libtorrent { namespace aux {
 
 #endif
 
+#ifdef TORRENT_WINDOWS
+
+	// Pin a socket's outgoing interface by OS interface index using
+	// IP_UNICAST_IF / IPV6_UNICAST_IF. On Windows, bind()ing a socket to a
+	// source address does NOT determine the egress interface -- the weak host
+	// model lets the routing table pick a NIC, so a VPN-bound socket can still
+	// send out another interface. IP_UNICAST_IF overrides the route lookup and
+	// forces the interface. Quirk: the IPv4 option takes the index in *network*
+	// byte order, the IPv6 option in *host* byte order.
+	struct unicast_interface_v4
+	{
+		explicit unicast_interface_v4(unsigned int idx) : m_value(::htonl(idx)) {}
+		template<class Protocol> int level(Protocol const&) const { return IPPROTO_IP; }
+		template<class Protocol> int name(Protocol const&) const { return IP_UNICAST_IF; }
+		template<class Protocol> char const* data(Protocol const&) const { return reinterpret_cast<char const*>(&m_value); }
+		template<class Protocol> size_t size(Protocol const&) const { return sizeof(m_value); }
+	private:
+		::DWORD m_value;
+	};
+
+	struct unicast_interface_v6
+	{
+		explicit unicast_interface_v6(unsigned int idx) : m_value(idx) {}
+		template<class Protocol> int level(Protocol const&) const { return IPPROTO_IPV6; }
+		template<class Protocol> int name(Protocol const&) const { return IPV6_UNICAST_IF; }
+		template<class Protocol> char const* data(Protocol const&) const { return reinterpret_cast<char const*>(&m_value); }
+		template<class Protocol> size_t size(Protocol const&) const { return sizeof(m_value); }
+	private:
+		::DWORD m_value;
+	};
+
+	// Best-effort egress-interface pin. A zero/negative index is treated as
+	// "unknown" and left to the OS. Callers decide whether a set_option failure
+	// is fatal (strict/vpn mode) or advisory.
+	template <typename T>
+	void bind_socket_to_interface_index(T& sock, int if_index, bool v4, error_code& ec)
+	{
+		if (if_index <= 0) return;
+		if (v4)
+			sock.set_option(unicast_interface_v4(static_cast<unsigned int>(if_index)), ec);
+		else
+			sock.set_option(unicast_interface_v6(static_cast<unsigned int>(if_index)), ec);
+	}
+
+#endif // TORRENT_WINDOWS
+
 } }
 
 #endif
