@@ -1068,6 +1068,7 @@ bool ssl_server_name_callback(ssl::stream_handle_type stream_handle, std::string
 		// cleanly. i.e. essentially tracker hostname lookups that we're not
 		// about to send event=stopped to
 		m_host_resolver.abort();
+		if (m_dns_resolver) m_dns_resolver->abort();
 
 		m_close_file_timer.cancel();
 
@@ -5614,6 +5615,60 @@ namespace {
 #endif
 	}
 
+	void session_impl::update_dns_server()
+	{
+		std::string const server = m_settings.get_str(settings_pack::dns_server);
+		if (server.empty())
+		{
+			m_dns_resolver.reset();
+			return;
+		}
+
+		// parse "ip" or "ip:port" (port defaults to 53). Only split on a colon
+		// when there is exactly one, to avoid mangling bare IPv6 literals.
+		std::string host = server;
+		int port = 53;
+		auto const colon = server.find(':');
+		if (colon != std::string::npos && server.rfind(':') == colon)
+		{
+			host = server.substr(0, colon);
+			port = std::atoi(server.c_str() + colon + 1);
+		}
+
+		error_code ec;
+		address const srv = make_address(host, ec);
+		if (ec || port <= 0 || port > 65535)
+		{
+#ifndef TORRENT_DISABLE_LOGGING
+			if (should_log())
+				session_log("invalid dns_server setting: \"%s\"", server.c_str());
+#endif
+			m_dns_resolver.reset();
+			return;
+		}
+		udp::endpoint const server_ep(srv, std::uint16_t(port));
+
+		// bind DNS queries to the configured outgoing interface (same family as
+		// the server) so lookups egress the VPN tunnel rather than leaking via
+		// the system resolver.
+		address bind_addr;
+		for (auto const& s : m_outgoing_interfaces)
+		{
+			error_code e2;
+			address const a = make_address(s.c_str(), e2);
+			if (!e2 && a.is_v4() == srv.is_v4()) { bind_addr = a; break; }
+		}
+		int if_index = 0;
+#ifdef TORRENT_WINDOWS
+		if (!bind_addr.is_unspecified())
+		{
+			error_code e3;
+			if_index = interface_index_for_address(bind_addr, m_io_context, e3);
+		}
+#endif
+		m_dns_resolver = std::make_unique<dns_resolver>(m_io_context, server_ep, bind_addr, if_index);
+	}
+
 	void session_impl::update_dht_bootstrap_nodes()
 	{
 #ifndef TORRENT_DISABLE_DHT
@@ -6184,7 +6239,7 @@ namespace {
 	void session_impl::add_dht_node_name(std::pair<std::string, int> const& node)
 	{
 		ADD_OUTSTANDING_ASYNC("session_impl::on_dht_name_lookup");
-		m_host_resolver.async_resolve(node.first, resolver::abort_on_shutdown
+		get_resolver().async_resolve(node.first, resolver::abort_on_shutdown
 			, std::bind(&session_impl::on_dht_name_lookup
 				, this, _1, _2, node.second));
 	}
