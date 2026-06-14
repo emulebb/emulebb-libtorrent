@@ -888,6 +888,7 @@ namespace aux {
 			void update_vpn_guard();
 			void on_vpn_guard_timer(error_code const& ec);
 			void run_vpn_probes();
+			void run_http_probe(address const& bind_addr, int if_index);
 			void on_vpn_probe_result(address const& observed, bool bound);
 			bool vpn_address_forbidden(address const& a) const;
 

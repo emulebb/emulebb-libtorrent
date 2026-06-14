@@ -418,10 +418,16 @@ namespace aux {
 			vpn_guard_forbidden_address,
 
 			// optional TCP-path check for the VPN guard: an IP-echo HTTP endpoint
-			// as "ip[:port][/path]" (default port 80, path "/"). When set, the
-			// guard also issues a plaintext HTTP GET from the bound TCP socket and
-			// compares the returned public IP, covering the TCP egress path in
-			// addition to STUN's UDP path. Use an IP literal (no DNS in the guard).
+			// as "host[:port][/path]" (default port 80, path "/"), where host may
+			// be a hostname or an IP literal. When set, the guard also issues a
+			// plaintext HTTP GET from the bound TCP socket and compares the
+			// returned public IP, covering the TCP egress path in addition to
+			// STUN's UDP path. If vpn_guard_stun_server is also set, the HTTP probe
+			// runs only after a clean STUN result, and the hostname is resolved
+			// then -- over the VPN DNS when dns_server is configured -- so the echo
+			// host is never looked up while a leak is live. The probe connects to
+			// the resolved IP but sends Host: <hostname>, so vhosted echo services
+			// work.
 			vpn_guard_http_echo,
 
 			// vpn_guard_forbidden_address accepts a comma-separated list of IPs and
