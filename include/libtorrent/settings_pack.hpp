@@ -1065,11 +1065,17 @@ namespace aux {
 
 			// when set, the session runs in a strict "VPN mode" that treats the
 			// configured outgoing/listen interface as the only permitted egress
-			// and fails closed rather than leaking the real address. It forces
-			// enable_lsd, enable_upnp and enable_natpmp off (LAN-scoped services),
-			// refuses to open an unspecified (0.0.0.0 / ::) listen socket, and
+			// and fails closed rather than leaking the real address. It refuses to
+			// expand an unspecified (0.0.0.0 / ::) listen interface to all
+			// interfaces (which would open listen/UDP sockets on the LAN), and
 			// turns the otherwise best-effort egress-interface pinning into a hard
 			// requirement. Intended for clients bound to a VPN tunnel.
+			//
+			// vpn_mode does NOT disable LSD/UPnP/NAT-PMP: those are already bound
+			// to the listen interface, and port forwarding over the VPN interface
+			// (e.g. NAT-PMP/UPnP to the VPN gateway) is a supported, desirable
+			// configuration. Disable them explicitly via enable_lsd / enable_upnp
+			// / enable_natpmp if you don't want them.
 			vpn_mode,
 
 			max_bool_setting_internal
