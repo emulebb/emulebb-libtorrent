@@ -204,6 +204,7 @@ set(libtorrent_aux_include_files
 	bind_to_device.hpp
 	buffer.hpp
 	dns_resolver.hpp
+	stun.hpp
 	byteswap.hpp
 	chained_buffer.hpp
 	cpuid.hpp
@@ -383,6 +384,7 @@ set(sources
 	request_blocks.cpp
 	resolve_links.cpp
 	resolver.cpp
+	stun.cpp
 	session.cpp
 	session_call.cpp
 	session_handle.cpp
