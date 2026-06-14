@@ -1,0 +1,67 @@
+{
+  "schemaVersion": "emulebb-fork-delta/v1",
+  "upstream": {
+    "remote": "upstream",
+    "branch": "RC_2_0",
+    "url": "https://github.com/arvidn/libtorrent.git",
+    "baseCommit": "8d58b0e78",
+    "baseVersion": "2.0.13"
+  },
+  "fork": {
+    "remote": "origin",
+    "branch": "RC_2_0",
+    "url": "https://github.com/emulebb/emulebb-libtorrent.git"
+  },
+  "goals": [
+    "Tune libtorrent for the BB world: VPN-first egress correctness plus a DHT-harvester-friendly engine for qBittorrentBB.",
+    "Keep generic libtorrent behaviour as close to upstream RC_2_0 as possible (additive, ABI-append-only).",
+    "Make upstream rebases conflict-driven and test-driven instead of memory-driven."
+  ],
+  "policy": {
+    "buildOutput": "Build only under %EMULEBB_WORKSPACE_OUTPUT_ROOT%; never under c:\\prj. Install to <out>\\deps\\libtorrent via cmake --install --prefix (the default prefix wrongly targets C:\\Program Files).",
+    "lineEndings": "LF",
+    "attribution": "No AI/Claude/Anthropic attribution anywhere.",
+    "abi": "settings_pack (str/int/bool) and alert_types enums are APPEND-ONLY; new entries go at the end before max_*_setting_internal / and num_alert_types is bumped within abi_alert_count (128)."
+  },
+  "forkOwned": [
+    { "path": "include/libtorrent/aux_/stun.hpp", "reason": "VPN-guard STUN client (RFC-5389, bound + IP_UNICAST_IF-pinned)" },
+    { "path": "src/stun.cpp", "reason": "Multi-server STUN probe fan-out for egress verification" },
+    { "path": "include/libtorrent/aux_/http_ip_probe.hpp", "reason": "Bound HTTP IP-echo probe (TCP egress check)" },
+    { "path": "src/http_ip_probe.cpp", "reason": "TCP-path analogue of the STUN probe" },
+    { "path": "include/libtorrent/aux_/dns_resolver.hpp", "reason": "Interface-bound DNS-over-UDP resolver" },
+    { "path": "src/dns_resolver.cpp", "reason": "Closes the getaddrinfo DNS leak by binding lookups to the tunnel" }
+  ],
+  "sharedSeams": [
+    { "path": "src/session_impl.cpp", "reason": "Egress binding fail-closed, uTP outgoing-interface, IP_UNICAST_IF pins, vpn_mode, the VPN guard timer/probes/leak handling, DNS-resolver wiring, DHT-harvester tuning" },
+    { "path": "include/libtorrent/aux_/session_impl.hpp", "reason": "vpn guard + dns resolver members and method declarations" },
+    { "path": "include/libtorrent/settings_pack.hpp", "reason": "Appended vpn_mode (bool), dns_server, vpn_guard_stun_server, vpn_guard_allowed_cidrs, vpn_guard_http_echo (strings) -- ABI append-only" },
+    { "path": "src/settings_pack.cpp", "reason": "Defaults + update callbacks for the new settings" },
+    { "path": "include/libtorrent/alert_types.hpp", "reason": "Appended vpn_external_address_alert (105) + vpn_leak_alert (106); num_alert_types 105->107" },
+    { "path": "src/alert.cpp", "reason": "Alert ctors/messages/name-table entries for the new alerts" },
+    { "path": "include/libtorrent/aux_/bind_to_device.hpp", "reason": "IP_UNICAST_IF / IPV6_UNICAST_IF socket options (Windows egress pin)" },
+    { "path": "include/libtorrent/enum_net.hpp", "reason": "ip_interface::if_index, interface_index_for_address(), the IP_UNICAST_IF pin in bind_socket_to_device" },
+    { "path": "src/enum_net.cpp", "reason": "Populate if_index (Windows GetAdaptersAddresses) + interface_index_for_address()" },
+    { "path": "CMakeLists.txt", "reason": "Register stun/http_ip_probe/dns_resolver sources + headers" }
+  ],
+  "features": [
+    "Egress hardening L1-L5: fail-closed outgoing bind, uTP honours outgoing_interfaces, IP_UNICAST_IF Windows egress pin (TCP + UDP/DHT), vpn_mode (refuse 0.0.0.0 listen, fail-closed pins).",
+    "Interface-bound DNS-over-UDP resolver selected by settings_pack::dns_server.",
+    "VPN egress guard: bound STUN (multi-server) + bound HTTP IP-echo probes, allow-list CIDR match (vpn_guard_allowed_cidrs), fail-closed pause+stop_dht on a leak (vpn_leak_alert)."
+  ],
+  "rebaseWorkflow": [
+    "Scheduled GitHub workflow .github/workflows/nightly-upstream.yml checks upstream/RC_2_0 daily and exits when upstream is already contained in origin/RC_2_0.",
+    "When upstream moved it rebases automation/upstream-nightly on upstream/RC_2_0 and STOPS on conflicts (it does not touch RC_2_0). The heavy C++/Qt build is intentionally NOT run in CI; a clean rebase pushes the sync branch for a human/local build to validate.",
+    "git fetch upstream RC_2_0",
+    "git checkout -b upstream-sync/YYYYMMDD RC_2_0",
+    "git rebase upstream/RC_2_0",
+    "Resolve forkOwned paths by preserving the fork files (new files; conflicts are unlikely).",
+    "Resolve sharedSeams by re-applying the additive deltas and keeping enums append-only.",
+    "Build + install locally (see qbittorrentbb repo for the cmake recipe) and run the qbittorrentbb live-wire VPN-guard harness."
+  ],
+  "acceptance": [
+    "All forkOwned files exist and CMake still registers them.",
+    "settings_pack / alert enums remain append-only (no reordered or removed entries).",
+    "torrent-rasterbar builds Release x64 clean.",
+    "qbittorrentbb test/livewire/vpn_guard_test.py passes (ALLOW clean + LEAK fail-closed)."
+  ]
+}

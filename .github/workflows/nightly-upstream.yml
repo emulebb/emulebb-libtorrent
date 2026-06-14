@@ -1,0 +1,69 @@
+# Nightly upstream sync (rebase-check only).
+#
+# Unlike the amutorrent nightly, this fork's full build is a multi-hour C++/Qt +
+# vcpkg job, so CI does NOT build or publish. It only detects upstream movement
+# and proves the fork delta still rebases cleanly: on a clean rebase it pushes
+# automation/upstream-nightly for a human/local build to validate before RC_2_0
+# is fast-forwarded; on conflict the job fails loudly. RC_2_0 is never touched.
+
+name: Nightly upstream sync
+
+on:
+  schedule:
+    # UTC. Off the top-of-hour spike and the other eMuleBB nightly slots.
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Push the sync branch even when upstream has not moved.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: emulebb-libtorrent-nightly-upstream
+  cancel-in-progress: false
+
+jobs:
+  rebase-check:
+    name: Check upstream and rebase the fork delta
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: RC_2_0
+
+      - name: Fetch upstream and attempt rebase
+        env:
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          set -euo pipefail
+          git config user.name "eMuleBB automation"
+          git config user.email "actions@users.noreply.github.com"
+          git remote add upstream https://github.com/arvidn/libtorrent.git
+          git fetch origin RC_2_0
+          git fetch upstream RC_2_0
+
+          origin_sha="$(git rev-parse origin/RC_2_0)"
+          upstream_sha="$(git rev-parse upstream/RC_2_0)"
+          echo "origin/RC_2_0:   ${origin_sha}"
+          echo "upstream/RC_2_0: ${upstream_sha}"
+
+          if [[ "${FORCE}" != "true" ]] && git merge-base --is-ancestor "${upstream_sha}" origin/RC_2_0; then
+              echo "No new upstream commits; nothing to rebase."
+              exit 0
+          fi
+
+          git checkout -B automation/upstream-nightly origin/RC_2_0
+          # Fails the job (non-zero) if the fork delta does not rebase cleanly,
+          # surfacing the conflict instead of silently publishing.
+          git rebase upstream/RC_2_0
+
+          git push origin HEAD:refs/heads/automation/upstream-nightly --force-with-lease
+          echo "Clean rebase pushed to automation/upstream-nightly."
+          echo "Build + install locally and run the qbittorrentbb live-wire VPN-guard"
+          echo "harness, then fast-forward RC_2_0 to this ref."
