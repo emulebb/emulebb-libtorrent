@@ -3135,25 +3135,22 @@ TORRENT_VERSION_NAMESPACE_3_END
 	};
 
 	// Posted when the VPN guard detects that the bound socket's public egress IP
-	// equals settings_pack::vpn_guard_forbidden_address -- i.e. traffic is NOT
+	// is NOT within settings_pack::vpn_guard_allowed_cidrs -- i.e. traffic is not
 	// going through the expected VPN tunnel. The session is paused and the DHT
 	// stopped (fail closed) before this alert is posted.
 	struct TORRENT_EXPORT vpn_leak_alert final : alert
 	{
 		// internal
 		TORRENT_UNEXPORT vpn_leak_alert(aux::stack_allocator& alloc
-			, address const& observed, address const& forbidden);
+			, address const& observed);
 
 		TORRENT_DEFINE_ALERT_PRIO(vpn_leak_alert, 106, alert_priority::critical)
 
 		static constexpr alert_category_t static_category = alert_category::error;
 		std::string message() const override;
 
-		// the public egress IP that was observed
+		// the public egress IP that was observed outside the allowed set
 		aux::noexcept_movable<address> observed_address;
-
-		// the forbidden ("real") IP it matched
-		aux::noexcept_movable<address> forbidden_address;
 	};
 
 	// internal

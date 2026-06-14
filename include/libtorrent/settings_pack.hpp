@@ -410,12 +410,12 @@ namespace aux {
 			// "ip:port", default STUN port 3478), the session periodically sends a
 			// STUN Binding Request from the bound listen socket to learn its real
 			// public egress IP (posted via vpn_external_address_alert). If
-			// vpn_guard_forbidden_address is also set and the observed egress IP
-			// equals it, traffic is NOT going through the expected VPN tunnel: the
-			// session is paused, the DHT is stopped and a vpn_leak_alert is posted
-			// (fail closed). Empty = guard disabled.
+			// vpn_guard_allowed_cidrs is also set and the observed egress IP is NOT
+			// within any of those (allow-list) ranges, traffic is not going through
+			// the expected VPN tunnel: the session is paused, the DHT is stopped
+			// and a vpn_leak_alert is posted (fail closed). Empty = guard disabled.
 			vpn_guard_stun_server,
-			vpn_guard_forbidden_address,
+			vpn_guard_allowed_cidrs,
 
 			// optional TCP-path check for the VPN guard: an IP-echo HTTP endpoint
 			// as "host[:port][/path]" (default port 80, path "/"), where host may
@@ -430,9 +430,11 @@ namespace aux {
 			// work.
 			vpn_guard_http_echo,
 
-			// vpn_guard_forbidden_address accepts a comma-separated list of IPs and
-			// CIDR ranges (e.g. "203.0.113.7,198.51.100.0/24"); a probe result that
-			// falls in any of them is treated as a leak.
+			// vpn_guard_allowed_cidrs is a comma-separated allow-list of the VPN
+			// provider's public exit IPs / CIDR ranges (e.g.
+			// "176.10.104.0/22,149.88.27.0/24"); a probe result *outside* all of
+			// them is treated as a leak. Whitelisting the VPN's known ranges avoids
+			// having to know/track the real ISP address (eMuleBB VpnGuard model).
 
 			max_string_setting_internal
 		};

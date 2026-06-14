@@ -890,7 +890,9 @@ namespace aux {
 			void run_vpn_probes();
 			void run_http_probe(address const& bind_addr, int if_index);
 			void on_vpn_probe_result(address const& observed, bool bound);
-			bool vpn_address_forbidden(address const& a) const;
+			// true if `a` is within the configured allow-list (or the list is
+			// empty, i.e. unrestricted). A probe result that is NOT allowed = leak.
+			bool vpn_address_allowed(address const& a) const;
 
 			void update_socket_buffer_size();
 			void update_dht_announce_interval();
