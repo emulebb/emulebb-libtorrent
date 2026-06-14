@@ -1922,6 +1922,21 @@ namespace {
 			return ret;
 		}
 
+#ifdef TORRENT_WINDOWS
+		// The UDP socket carries DHT and uTP traffic. bind() to the listen
+		// address does not pin the egress interface on Windows (weak host
+		// model), so also force it with IP_UNICAST_IF. Best-effort: a pin
+		// failure does not fail listening (vpn_mode escalates it to fail-closed).
+		if (!udp_bind_ep.address().is_unspecified())
+		{
+			error_code iec;
+			int const idx = interface_index_for_address(udp_bind_ep.address(), m_io_context, iec);
+			error_code sec;
+			aux::bind_socket_to_interface_index(ret->udp_sock->sock, idx
+				, udp_bind_ep.address().is_v4(), sec);
+		}
+#endif
+
 		// if we did not open a TCP listen socket, ret->local_endpoint was never
 		// initialized, so do that now, based on the UDP socket
 		if (!(ret->flags & listen_socket_t::accept_incoming))
