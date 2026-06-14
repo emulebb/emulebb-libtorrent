@@ -160,6 +160,12 @@ enum class if_state : std::uint8_t {
 	// populated or not.
 	TORRENT_EXTRA_EXPORT bool has_any_internet_route(span<ip_route const> routes);
 
+	// returns the OS interface index that owns ``addr``, or 0 if it cannot be
+	// determined. Used for IP_UNICAST_IF egress pinning on Windows, where a
+	// plain bind() to a source address does not select the outgoing interface.
+	TORRENT_EXTRA_EXPORT int interface_index_for_address(address const& addr
+		, io_context& ios, error_code& ec);
+
 	// attempt to bind socket to the device with the specified name. For systems
 	// that don't support SO_BINDTODEVICE the socket will be bound to one of the
 	// IP addresses of the specified device. In this case it is necessary to
@@ -185,6 +191,18 @@ enum class if_state : std::uint8_t {
 			bind_ep.address(ip);
 			// it appears to be an IP. Just bind to that address
 			sock.bind(bind_ep, ec);
+#ifdef TORRENT_WINDOWS
+			// bind() alone does not pin the egress interface on Windows (weak
+			// host model). Also force the outgoing interface via IP_UNICAST_IF.
+			// Best-effort here; a failure does not fail the bind.
+			if (!ec && !bind_ep.address().is_unspecified())
+			{
+				error_code iec;
+				int const idx = interface_index_for_address(bind_ep.address(), ios, iec);
+				error_code sec;
+				aux::bind_socket_to_interface_index(sock, idx, bind_ep.address().is_v4(), sec);
+			}
+#endif
 			return bind_ep.address();
 		}
 
@@ -226,18 +244,22 @@ enum class if_state : std::uint8_t {
 			}
 		}
 		sock.bind(bind_ep, ec);
+#ifdef TORRENT_WINDOWS
+		// pin the egress interface (see note above); best-effort.
+		if (!ec && !bind_ep.address().is_unspecified())
+		{
+			error_code iec;
+			int const idx = interface_index_for_address(bind_ep.address(), ios, iec);
+			error_code sec;
+			aux::bind_socket_to_interface_index(sock, idx, bind_ep.address().is_v4(), sec);
+		}
+#endif
 		return bind_ep.address();
 	}
 
 	// returns the device name whose local address is ``addr``. If
 	// no such device is found, an empty string is returned.
 	TORRENT_EXTRA_EXPORT std::string device_for_address(address addr
-		, io_context& ios, error_code& ec);
-
-	// returns the OS interface index that owns ``addr``, or 0 if it cannot be
-	// determined. Used for IP_UNICAST_IF egress pinning on Windows, where a
-	// plain bind() to a source address does not select the outgoing interface.
-	TORRENT_EXTRA_EXPORT int interface_index_for_address(address const& addr
 		, io_context& ios, error_code& ec);
 
 }
