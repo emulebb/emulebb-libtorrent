@@ -2316,15 +2316,13 @@ namespace {
 
 		ec.clear();
 
-		bool const vpn_mode = m_settings.get_bool(settings_pack::vpn_mode);
-
-		if (m_settings.get_bool(settings_pack::enable_natpmp) && !vpn_mode)
+		if (m_settings.get_bool(settings_pack::enable_natpmp))
 		{
 			for (auto const& s : new_sockets)
 				start_natpmp(s);
 		}
 
-		if (m_settings.get_bool(settings_pack::enable_upnp) && !vpn_mode)
+		if (m_settings.get_bool(settings_pack::enable_upnp))
 		{
 			for (auto const& s : new_sockets)
 				start_upnp(s);
@@ -5549,10 +5547,7 @@ namespace {
 
 	void session_impl::update_upnp()
 	{
-		// vpn_mode disables LAN-scoped services: UPnP talks SSDP to the local
-		// gateway and would map ports on the physical router, off-tunnel.
-		if (m_settings.get_bool(settings_pack::enable_upnp)
-			&& !m_settings.get_bool(settings_pack::vpn_mode))
+		if (m_settings.get_bool(settings_pack::enable_upnp))
 			start_upnp();
 		else
 			stop_upnp();
@@ -5560,8 +5555,7 @@ namespace {
 
 	void session_impl::update_natpmp()
 	{
-		if (m_settings.get_bool(settings_pack::enable_natpmp)
-			&& !m_settings.get_bool(settings_pack::vpn_mode))
+		if (m_settings.get_bool(settings_pack::enable_natpmp))
 			start_natpmp();
 		else
 			stop_natpmp();
@@ -5569,10 +5563,7 @@ namespace {
 
 	void session_impl::update_lsd()
 	{
-		// vpn_mode disables Local Service Discovery: it multicasts our infohashes
-		// to the local segment, which is pure leak surface for a VPN-bound client.
-		if (m_settings.get_bool(settings_pack::enable_lsd)
-			&& !m_settings.get_bool(settings_pack::vpn_mode))
+		if (m_settings.get_bool(settings_pack::enable_lsd))
 			start_lsd();
 		else
 			stop_lsd();
