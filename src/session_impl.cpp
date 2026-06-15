@@ -2046,6 +2046,10 @@ namespace {
 		m_ip_notifier->async_wait([this] (error_code const& e)
 			{ wrap(&session_impl::on_ip_change, e); });
 		reopen_network_sockets({});
+		// A network change (VPN reconnect / tunnel IP rotation) is exactly the
+		// moment egress can leak, so re-verify immediately instead of waiting for
+		// the slow guard tick. update_vpn_guard() is a no-op when the guard is off.
+		update_vpn_guard();
 	}
 
 	// TODO: could this function be merged with expand_unspecified_addresses?
@@ -5682,7 +5686,9 @@ namespace {
 	{
 		if (ec) return;
 		run_vpn_probes();
-		m_vpn_guard_timer.expires_after(seconds(300));
+		// Re-verify on a tight cadence: a leak is only acted on after a probe
+		// confirms it, so a long interval is a long exposure window.
+		m_vpn_guard_timer.expires_after(seconds(60));
 		m_vpn_guard_timer.async_wait(std::bind(&session_impl::on_vpn_guard_timer, this, _1));
 	}
 
