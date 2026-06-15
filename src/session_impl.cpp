@@ -5834,7 +5834,17 @@ namespace {
 			{
 				address const net = make_address(token.substr(0, slash), ec);
 				if (ec || net.is_v4() != a.is_v4()) continue;
-				int const bits = std::atoi(token.c_str() + slash + 1);
+				// Validate the prefix length strictly: a malformed prefix must
+				// NEVER fall through to /0 (atoi("")/atoi("x") == 0), which would
+				// build an all-zero mask that matches every address -- turning a
+				// typo in the allow-list into "allow all egress".
+				std::string const bits_str = token.substr(slash + 1);
+				if (bits_str.empty()
+					|| bits_str.find_first_not_of("0123456789") != std::string::npos)
+					continue;
+				int const bits = std::atoi(bits_str.c_str());
+				int const max_bits = net.is_v4() ? 32 : 128;
+				if (bits < 0 || bits > max_bits) continue;
 				address const mask = build_netmask(bits, family(net));
 				if (match_addr_mask(a, net, mask)) return true;
 			}
