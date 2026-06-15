@@ -5677,7 +5677,10 @@ namespace {
 			m_vpn_guard_timer.cancel();
 			return;
 		}
-		// (re)start: probe shortly, then on a slow interval
+		// (re)start: probe shortly, then on a slow interval. Reset the
+		// verification clock so the watchdog gives a grace period before it
+		// could fail closed on a not-yet-confirmed egress.
+		m_vpn_guard_last_ok = aux::time_now();
 		m_vpn_guard_timer.expires_after(seconds(5));
 		m_vpn_guard_timer.async_wait(std::bind(&session_impl::on_vpn_guard_timer, this, _1));
 	}
@@ -5685,6 +5688,22 @@ namespace {
 	void session_impl::on_vpn_guard_timer(error_code const& ec)
 	{
 		if (ec) return;
+		// Watchdog: when the guard is enforcing (an allow-list is set) and egress
+		// has not been confirmed within the allowed set for a while (all probes
+		// failing / network unreachable), fail closed. "Cannot verify" is treated
+		// as a leak rather than silently tolerated.
+		if (!m_settings.get_str(settings_pack::vpn_guard_allowed_cidrs).empty()
+			&& !m_vpn_guard_paused
+			&& (aux::time_now() - m_vpn_guard_last_ok) > seconds(180))
+		{
+			m_vpn_guard_paused = true;
+			pause();
+#ifndef TORRENT_DISABLE_DHT
+			stop_dht();
+#endif
+			if (m_alerts.should_post<vpn_leak_alert>())
+				m_alerts.emplace_alert<vpn_leak_alert>(address());
+		}
 		run_vpn_probes();
 		// Re-verify on a tight cadence: a leak is only acted on after a probe
 		// confirms it, so a long interval is a long exposure window.
@@ -5877,14 +5896,20 @@ namespace {
 			if (m_alerts.should_post<vpn_leak_alert>())
 				m_alerts.emplace_alert<vpn_leak_alert>(observed);
 		}
-		else if (m_vpn_guard_paused)
+		else
 		{
-			// a clean probe after a leak: lift the guard pause and restore DHT
-			m_vpn_guard_paused = false;
-			resume();
+			// egress confirmed within the allowed set: refresh the watchdog clock
+			m_vpn_guard_last_ok = aux::time_now();
+			if (m_vpn_guard_paused)
+			{
+				// a clean probe after a (leak or unverified) pause: lift it and
+				// restore DHT
+				m_vpn_guard_paused = false;
+				resume();
 #ifndef TORRENT_DISABLE_DHT
-			update_dht();
+				update_dht();
 #endif
+			}
 		}
 	}
 
