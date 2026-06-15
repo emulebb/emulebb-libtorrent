@@ -46,7 +46,7 @@
   "features": [
     "Egress hardening L1-L5: fail-closed outgoing bind, uTP honours outgoing_interfaces, IP_UNICAST_IF Windows egress pin (TCP + UDP/DHT), vpn_mode (refuse 0.0.0.0 listen, fail-closed pins).",
     "Interface-bound DNS-over-UDP resolver selected by settings_pack::dns_server.",
-    "VPN egress guard: bound STUN (multi-server) + bound HTTP IP-echo probes, allow-list CIDR match (vpn_guard_allowed_cidrs), fail-closed pause+stop_dht on a leak (vpn_leak_alert)."
+    "VPN egress guard: bound STUN (multi-server) + bound HTTP IP-echo probes, strictly-validated allow-list CIDR match (vpn_guard_allowed_cidrs), 60s probe cadence + immediate re-probe on IP change, fail-closed pause+stop_dht on a confirmed leak OR when egress can no longer be verified (staleness watchdog), via vpn_leak_alert."
   ],
   "presenceGuards": [
     { "path": "include/libtorrent/settings_pack.hpp", "contains": ["vpn_mode", "dns_server", "vpn_guard_stun_server", "vpn_guard_allowed_cidrs", "vpn_guard_http_echo"] },
