@@ -1344,6 +1344,10 @@ namespace aux {
 			// if it falls in the forbidden set.
 			deadline_timer m_vpn_guard_timer;
 			bool m_vpn_guard_paused = false;
+			// Last time a probe confirmed egress is within the allowed set. The
+			// guard fails closed if this goes stale (egress can no longer be
+			// verified, e.g. all probes failing), not only on a confirmed leak.
+			time_point m_vpn_guard_last_ok{};
 
 			// the index of the torrent that will be offered to
 			// connect to a peer next time on_tick is called.
