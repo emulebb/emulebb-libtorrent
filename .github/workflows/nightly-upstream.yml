@@ -1,4 +1,4 @@
-# Nightly upstream sync (rebase-check only).
+# Manual upstream sync (rebase-check only).
 #
 # Unlike the amutorrent nightly, this fork's full build is a multi-hour C++/Qt +
 # vcpkg job, so CI does NOT build or publish. It only detects upstream movement
@@ -6,12 +6,9 @@
 # automation/upstream-nightly for a human/local build to validate before RC_2_0
 # is fast-forwarded; on conflict the job fails loudly. RC_2_0 is never touched.
 
-name: Nightly upstream sync
+name: Manual upstream sync
 
 on:
-  schedule:
-    # UTC. Off the top-of-hour spike and the other eMuleBB nightly slots.
-    - cron: '17 3 * * *'
   workflow_dispatch:
     inputs:
       force:
