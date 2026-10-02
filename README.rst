@@ -1,3 +1,11 @@
+eMuleBB fork status
+===================
+
+``emulebb-libtorrent`` is a paused experimental fork retained with the
+qBittorrentBB experiment. It is not part of the default eMuleBB workspace or an
+active product roadmap. The source remains available for analysis and explicit
+on-demand builds. The upstream project is ``arvidn/libtorrent``.
+
 .. image:: docs/img/logo-color-text.png
 
 .. image:: https://github.com/arvidn/libtorrent/actions/workflows/windows.yml/badge.svg

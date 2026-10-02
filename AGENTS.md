@@ -11,6 +11,9 @@ libtorrent fork.
 
 ## What this fork is
 
+- **Lifecycle: paused experiment.** Preserve this fork with qBittorrentBB for
+  analysis and explicit on-demand builds. Do not start feature, scheduled sync,
+  native VPN, or release work without an explicit operator decision.
 - This is `emulebb-libtorrent`, a fork of `arvidn/libtorrent` tracked on branch
   `RC_2_0` (libtorrent 2.0.x). It is the BT engine under
   [qBittorrentBB](https://github.com/emulebb/qbittorrentbb) and is tuned for the
